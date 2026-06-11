@@ -1,0 +1,86 @@
+# -----------------------------------------------------------------------------
+# Project
+# -----------------------------------------------------------------------------
+[project]
+name = "guitar-tabs-app"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = ["numpy>=2.4.6", "polars>=1.41.2", "streamlit>=1.58.0"]
+
+[dependency-groups]
+dev = ["ipykernel>=7.3.0", "pyright>=1.1.410", "pytest>=9.0.3", "ruff>=0.15.16"]
+
+
+# -----------------------------------------------------------------------------
+# Ruff
+# -----------------------------------------------------------------------------
+[tool.ruff]
+exclude = [
+    "__pypackages__",
+    "*.pyc",
+    "*.egg-info",
+    ".venv",
+    "*.ipynb",
+    "build",
+    "dist",
+    "data",
+    "examples",
+    "tests",
+    "experiments",
+]
+line-length = 100
+preview = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.ruff.lint]
+select = ["ALL"]
+ignore = [
+    "ANN204",
+    "ANN401",
+    "TD",
+    "FIX",
+    "EM101",
+    "TRY003",
+    "D105",
+    "E731",
+    "CPY001",
+    "DOC201",
+    "DOC502",
+]
+preview = true
+per-file-ignores = { "packages/*/tests/**/*.py" = [
+    "D",
+    "S",
+    "INP",
+    "PLR",
+    "PLC2701",
+] }
+
+
+# -----------------------------------------------------------------------------
+# Pyright
+# -----------------------------------------------------------------------------
+[tool.pyright]
+include = [
+    "experiments",
+    "packages/medical-finance/src",
+    "packages/medical-finance/tests",
+    "packages/reconcilekit/src",
+    "packages/reconcilekit/tests",
+]
+exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv"]
+ignore = ["**/.venv/**", "**/venv/**", "**/site-packages/**", "**/*.ipynb"]
+typeCheckingMode = "standard"
+deprecateTypingAliases = true
+strictDictionaryInference = true
+strictListInference = true
+strictSetInference = true
+strictParameterNoneValue = true
+enableReachabilityAnalysis = true
+reportImportCycles = true
+useLibraryCodeForTypes = false
