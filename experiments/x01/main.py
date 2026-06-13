@@ -1,9 +1,16 @@
-from enum import Enum
+from enum import Enum, StrEnum, auto
+from functools import lru_cache
 from pathlib import Path
 import json
 from sqlite3 import SQLITE_ERROR_MISSING_COLLSEQ
 from typing import Literal
+from math import log2
+from collections.abc import Sequence
 
+from dataclasses import dataclass
+# from pedalboard import Compressor, Gain, HighpassFilter, Reverb
+# from pedalboard._pedalboard import Pedalboard
+# from pedalboard.io import AudioFile
 import polars as pl
 import polars.selectors as cs
 from numba import njit
@@ -18,12 +25,15 @@ PARENT_PATH = FILE_PATH.parent
 DATA_PATH = PARENT_PATH / "data"
 OUT_PATH = PARENT_PATH / "out"
 
+TAB_01_CSV_DATA_PATH = DATA_PATH / "tab_01.csv"
+TUNING_01_JSON_DATA_PATH = DATA_PATH / "tuning_01.json"
+NOTES_01_JSONL_OUT_PATH = OUT_PATH / "notes_01.jsonl"
+TAB_01_WAV_OUT_PATH = OUT_PATH / "audio_01.wav"
+TAB_01_MP3_OUT_PATH = OUT_PATH / "audio_01.mp3"
 
 # -----------------------------------------------------------------------------
 # Note Conversions
 # -----------------------------------------------------------------------------
-import math
-
 NOTE_TO_SEMITONE = {
     "C": 0,
     "C#": 1,
@@ -74,7 +84,6 @@ SEMITONE_TO_NOTE_FLAT = {
     11: "B",
 }
 
-
 def name_to_midi(note: str) -> int:
     """Convert a note name (e.g., 'C4', 'A#3', 'Db5') to a MIDI number."""
     note = note.strip()
@@ -106,36 +115,81 @@ def midi_to_frequency(midi: int) -> float:
 
 def frequency_to_midi(freq: float) -> float:
     """Convert frequency in Hz to MIDI value (float)."""
-    return 69 + 12 * math.log2(freq / 440.0)
+    return 69 + 12 * log2(freq / 440.0)
+
+# -----------------------------------------------------------------------------
+# Types
+# -----------------------------------------------------------------------------
+class SynthAlgorithms(StrEnum):
+    KARPLUS_STRONG = auto()
+
+
+@dataclass(frozen=True, slots=True)
+class TabConfig:
+    speed: float = 4.0 # dashes/s
+    max_note_duration:float = 3.0
+    tuning: tuple[str, ...] = ("E4", "B3", "G3", "D3", "A2", "E2")
+    instrument_name: str = "guitar"
+    sample_rate: int = 44100
+    synthesis_algorithm: SynthAlgorithms = SynthAlgorithms.KARPLUS_STRONG
+    base_volume: float = 0.5
+    
+    @property
+    def dt(self) -> float:
+        return 1 / self.speed
+    
+    @property
+    def midi_tuning(self) -> tuple[int, ...]:
+        return tuple(name_to_midi(note) for note in self.tuning)
+    
+    
+# class Pedalboards(Enum):
+#     EMPTY = Pedalboard()
+#     ACOUSTIC = Pedalboard([
+#         HighpassFilter(cutoff_frequency_hz=80),
+#         Compressor(
+#             threshold_db=-20,
+#             ratio=2.5,
+#             attack_ms=10,
+#             release_ms=120,
+#         ),
+#         Reverb(
+#             room_size=0.18,
+#             damping=0.55,
+#             wet_level=0.08,
+#             dry_level=0.92,
+#         ),
+#         Gain(gain_db=1.5),
+#     ])
 
 
 # -----------------------------------------------------------------------------
 # Extraction
 # -----------------------------------------------------------------------------
-speed = 4 # dashes/s
-dt = 1 / speed
-max_note_duration = 3
-tuning = json.load(open(DATA_PATH / "tuning_01.json"))
-open_string_midi_values = tuple(name_to_midi(note) for note in tuning)
-instrument = "guitar"
-sample_rate = 44100
+cfg = TabConfig(
+    speed=4,
+    max_note_duration = 3,
+    tuning=json.load(open(TUNING_01_JSON_DATA_PATH)),
+    instrument_name="guitar",
+    sample_rate=44100,
+)
 
 tab_df = (
     pl.scan_csv(
-        DATA_PATH / "tab_01.csv",
+        TAB_01_CSV_DATA_PATH,
         has_header=False,
-        new_columns=[f"string_{i}" for i in range(1, len(tuning) + 1)],
+        new_columns=[f"string_{i}" for i in range(1, len(cfg.tuning) + 1)],
     )
     .cast(pl.String)
     .with_row_index("index")
     .select(
-        pl.col("index").mul(dt).alias("start_time"),
+        (pl.col("index") * cfg.dt).alias("start_time"),
         cs.starts_with("string"),
     )
     .collect()
 )
 
-notes_df_schema = pl.Schema({
+NOTES_DF_SCHEMA = pl.Schema({
     "id": pl.UInt32,
     "start_time": pl.Float64,
     "duration": pl.Float64,
@@ -143,7 +197,6 @@ notes_df_schema = pl.Schema({
     "fret": pl.UInt16,
     "midi": pl.Int16,
     "frequency": pl.Float64,
-    "instrument": pl.Enum(["guitar"]),
 })
 notes_df = (
     pl.concat(
@@ -156,25 +209,24 @@ notes_df = (
             .with_columns((pl.col("fret") + open_midi).cast(pl.Int16).alias("midi"))
             .with_columns((440.0 * 2 ** ((pl.col("midi").cast(pl.Float64) - 69.0) / 12.0)).alias("frequency"))
             .with_columns((pl.col("start_time").shift(-1) - pl.col("start_time")).alias("duration"))
-            .with_columns(pl.min_horizontal(pl.col("duration"), pl.lit(max_note_duration)))
-            .with_columns(pl.lit(instrument).alias("instrument"))
+            .with_columns(pl.min_horizontal(pl.col("duration"), pl.lit(cfg.max_note_duration)))
             for string_num, open_midi
-            in enumerate(open_string_midi_values, start=1)
+            in enumerate(cfg.midi_tuning, start=1)
         ],
     )
     .sort(["start_time", "string_number"])
     .with_row_index("id")
-    .select(notes_df_schema.keys())
-    .cast(notes_df_schema)
+    .select(NOTES_DF_SCHEMA.keys())
+    .cast(NOTES_DF_SCHEMA)
     .collect()
 )
-notes_df.write_ndjson(OUT_PATH / "notes.jsonl")
+notes_df.write_ndjson(NOTES_01_JSONL_OUT_PATH)
 
 
 # -----------------------------------------------------------------------------
 # Synthesis
 # -----------------------------------------------------------------------------
-@njit(cache=True, fastmath=True)
+@njit(cache=True)
 def _karplus_strong_core(
     *,
     number_of_samples: int,
@@ -205,14 +257,14 @@ def _karplus_strong_core(
     return out
 
 
-def _karplus_strong_ring(
+def karplus_strong_ring(
     frequency: float,
     duration: float,
     *,
     sample_rate: int = 44100,
     decay: float = 0.996,
-    base_volume: float = 0.8,
-) -> npt.NDArray[np.float16]:
+    base_volume: float = 1,
+) -> npt.NDArray[np.float32]:
     """Generate a plucked string sound (numpy array) using the Karplus-Strong algorithm."""
     samples_per_cycle = int(sample_rate / frequency)
     number_of_samples = int(duration * sample_rate)
@@ -228,8 +280,75 @@ def _karplus_strong_ring(
     return signal * base_volume
 
 
+def synthesize_note(
+    config: TabConfig,
+    frequency: float,
+    duration: float,
+) -> npt.NDArray[np.float32]:
+    match config.synthesis_algorithm:
+        case SynthAlgorithms.KARPLUS_STRONG:
+            return karplus_strong_ring(
+                frequency=frequency,
+                duration=duration,
+                sample_rate=config.sample_rate,
+                base_volume=config.base_volume,
+            )
+        case _:
+            raise ValueError("Note implemented")
+
+
 def synthesize_notes(
-    config,
+    config: TabConfig,
     notes_df: pl.DataFrame,
-):
-    pass
+) -> npt.NDArray[np.float32]:
+    try:
+        notes_df.cast(NOTES_DF_SCHEMA)
+    except Exception as e:
+        raise ValueError(f"Invalid notes_df: {e}")
+    
+    song_length: float = notes_df.select(
+        (pl.col("start_time") + pl.col("duration")).alias("end_time"),
+    ).max().item()
+    
+    song_array = np.zeros(int(song_length * config.sample_rate), dtype=np.float32)
+    for note in notes_df.iter_rows(named=True):
+        synthesized = synthesize_note(
+            config=config,
+            frequency=note["frequency"],
+            duration=note["duration"],
+        )
+        start_idx = int(note["start_time"] * config.sample_rate)
+        song_array[start_idx : start_idx + len(synthesized)] += synthesized
+    
+    peak = np.max(np.abs(song_array))
+    return song_array / peak if peak > 1.0 else song_array
+
+
+# -----------------------------------------------------------------------------
+# Conversion
+# -----------------------------------------------------------------------------
+# def save_array(
+#     array: npt.NDArray[np.float32],
+#     sample_rate: int,
+#     path: Path,
+#     *,
+#     quality: int = 128,
+#     board: Pedalboards = Pedalboards.EMPTY,
+# ) -> None:
+#     if not path.suffix.lower() in {".mp3", ".ogg"}:
+#         raise ValueError("File path should end with `.mp3` or `.ogg`")
+    
+#     processed = board.value(array, sample_rate)
+#     peak = np.max(np.abs(processed))
+#     normalized = processed / peak if peak > 1.0 else processed
+
+#     num_channels = 1 if array.ndim == 1 else array.shape[0]
+#     with AudioFile(
+#         str(path),
+#         mode="w",
+#         samplerate=sample_rate,
+#         num_channels=num_channels,
+#         quality=quality,
+#     ) as f:
+#         f.write(normalized)
+

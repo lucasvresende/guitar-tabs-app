@@ -221,3 +221,6 @@ __marimo__/
 experiments/**/data
 experiments/**/out
 
+# Codex
+.codex
+
