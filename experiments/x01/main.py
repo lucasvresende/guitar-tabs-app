@@ -1,8 +1,14 @@
 from enum import Enum
 from pathlib import Path
 import json
+from sqlite3 import SQLITE_ERROR_MISSING_COLLSEQ
+from typing import Literal
 
 import polars as pl
+import polars.selectors as cs
+from numba import njit
+import numpy as np
+import numpy.typing as npt
 
 # -----------------------------------------------------------------------------
 # Paths
@@ -104,43 +110,126 @@ def frequency_to_midi(freq: float) -> float:
 
 
 # -----------------------------------------------------------------------------
-# Section
+# Extraction
 # -----------------------------------------------------------------------------
 speed = 4 # dashes/s
 dt = 1 / speed
-
+max_note_duration = 3
 tuning = json.load(open(DATA_PATH / "tuning_01.json"))
-open_string_midis = tuple(name_to_midi(note) for note in tuning)
-string_columns = tuple(f"string_{i}" for i in range(1, len(tuning)))
-df = (
-    pl.read_csv(
+open_string_midi_values = tuple(name_to_midi(note) for note in tuning)
+instrument = "guitar"
+sample_rate = 44100
+
+tab_df = (
+    pl.scan_csv(
         DATA_PATH / "tab_01.csv",
         has_header=False,
-        new_columns=string_columns
+        new_columns=[f"string_{i}" for i in range(1, len(tuning) + 1)],
     )
+    .cast(pl.String)
     .with_row_index("index")
-    .with_columns(pl.col(string_columns).replace("-", None).cast(pl.UInt8))
-    .with_columns((pl.col("index") * dt).alias("start_time"))
-    .select("index", "start_time", pl.all()) 
-)
-midi_df = df.with_columns(
-    [
-        (pl.col(string_col) + open_midi).cast(pl.UInt8).alias(string_col)
-        for string_col, open_midi in zip(string_columns, open_string_midis)
-    ],
-)
-freq_df = midi_df.with_columns(
-    [
-        (440.0 * 2 ** ((pl.col(string_col).cast(pl.Float64) - 69.0) / 12.0)).alias(string_col)
-        for string_col in string_columns
-    ],
+    .select(
+        pl.col("index").mul(dt).alias("start_time"),
+        cs.starts_with("string"),
+    )
+    .collect()
 )
 
+notes_df_schema = pl.Schema({
+    "id": pl.UInt32,
+    "start_time": pl.Float64,
+    "duration": pl.Float64,
+    "string_number": pl.UInt16,
+    "fret": pl.UInt16,
+    "midi": pl.Int16,
+    "frequency": pl.Float64,
+    "instrument": pl.Enum(["guitar"]),
+})
+notes_df = (
+    pl.concat(
+        [
+            tab_df.lazy()
+            .select(pl.col("start_time"), pl.col(f"string_{string_num}").alias("raw"))
+            .filter(pl.col("raw") != "-")
+            .with_columns(pl.lit(string_num).cast(pl.UInt16).alias("string_number"))
+            .with_columns(pl.col("raw").cast(pl.UInt16).alias("fret"))
+            .with_columns((pl.col("fret") + open_midi).cast(pl.Int16).alias("midi"))
+            .with_columns((440.0 * 2 ** ((pl.col("midi").cast(pl.Float64) - 69.0) / 12.0)).alias("frequency"))
+            .with_columns((pl.col("start_time").shift(-1) - pl.col("start_time")).alias("duration"))
+            .with_columns(pl.min_horizontal(pl.col("duration"), pl.lit(max_note_duration)))
+            .with_columns(pl.lit(instrument).alias("instrument"))
+            for string_num, open_midi
+            in enumerate(open_string_midi_values, start=1)
+        ],
+    )
+    .sort(["start_time", "string_number"])
+    .with_row_index("id")
+    .select(notes_df_schema.keys())
+    .cast(notes_df_schema)
+    .collect()
+)
+notes_df.write_ndjson(OUT_PATH / "notes.jsonl")
 
 
+# -----------------------------------------------------------------------------
+# Synthesis
+# -----------------------------------------------------------------------------
+@njit(cache=True, fastmath=True)
+def _karplus_strong_core(
+    *,
+    number_of_samples: int,
+    samples_per_cycle: int,
+    buffer: np.ndarray,
+    decay: float,
+) -> npt.NDArray[np.float32]:
+    """Karplus-Strong core algorithm for simulating plucked strings."""
+    out = np.empty(number_of_samples, dtype=np.float32)
 
-    
-    
+    i0 = 0  # “read” index
+    i1 = 1  # next sample index (i0+1 wrapped)
 
-    
-    
+    for t in range(number_of_samples):
+        x0 = buffer[i0]
+        x1 = buffer[i1]
+        out[t] = x0
+
+        # write back into the slot we just read
+        buffer[i0] = decay * 0.5 * (x0 + x1)
+
+        i0 += 1
+        if i0 == samples_per_cycle:
+            i0 = 0
+        i1 = i0 + 1
+        if i1 == samples_per_cycle:
+            i1 = 0
+    return out
+
+
+def _karplus_strong_ring(
+    frequency: float,
+    duration: float,
+    *,
+    sample_rate: int = 44100,
+    decay: float = 0.996,
+    base_volume: float = 0.8,
+) -> npt.NDArray[np.float16]:
+    """Generate a plucked string sound (numpy array) using the Karplus-Strong algorithm."""
+    samples_per_cycle = int(sample_rate / frequency)
+    number_of_samples = int(duration * sample_rate)
+    rng = np.random.default_rng()
+    buffer = (2.0 * rng.uniform(0.0, 1.0, samples_per_cycle) - 1.0).astype(np.float32)
+    signal = _karplus_strong_core(
+        number_of_samples=number_of_samples,
+        samples_per_cycle=samples_per_cycle,
+        buffer=buffer,
+        decay=decay,
+    )
+
+    return signal * base_volume
+
+
+def synthesize_notes(
+    config,
+    notes_df: pl.DataFrame,
+):
+    pass
