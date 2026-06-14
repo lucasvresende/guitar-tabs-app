@@ -6,16 +6,15 @@ from sqlite3 import SQLITE_ERROR_MISSING_COLLSEQ
 from typing import Literal
 from math import log2
 from collections.abc import Sequence
-
 from dataclasses import dataclass
-# from pedalboard import Compressor, Gain, HighpassFilter, Reverb
-# from pedalboard._pedalboard import Pedalboard
-# from pedalboard.io import AudioFile
+
 import polars as pl
 import polars.selectors as cs
 from numba import njit
 import numpy as np
 import numpy.typing as npt
+from pydub import AudioSegment
+from scipy.io import wavfile
 
 # -----------------------------------------------------------------------------
 # Paths
@@ -27,9 +26,12 @@ OUT_PATH = PARENT_PATH / "out"
 
 TAB_01_CSV_DATA_PATH = DATA_PATH / "tab_01.csv"
 TUNING_01_JSON_DATA_PATH = DATA_PATH / "tuning_01.json"
+
 NOTES_01_JSONL_OUT_PATH = OUT_PATH / "notes_01.jsonl"
+TAB_01_JSONL_OUT_PATH = OUT_PATH / "tab_01.jsonl"
 TAB_01_WAV_OUT_PATH = OUT_PATH / "audio_01.wav"
 TAB_01_MP3_OUT_PATH = OUT_PATH / "audio_01.mp3"
+TAB_01_OGG_OUT_PATH = OUT_PATH / "audio_01.ogg"
 
 # -----------------------------------------------------------------------------
 # Note Conversions
@@ -132,7 +134,7 @@ class TabConfig:
     instrument_name: str = "guitar"
     sample_rate: int = 44100
     synthesis_algorithm: SynthAlgorithms = SynthAlgorithms.KARPLUS_STRONG
-    base_volume: float = 0.5
+    base_volume: float = 1.0
     
     @property
     def dt(self) -> float:
@@ -141,86 +143,93 @@ class TabConfig:
     @property
     def midi_tuning(self) -> tuple[int, ...]:
         return tuple(name_to_midi(note) for note in self.tuning)
-    
-    
-# class Pedalboards(Enum):
-#     EMPTY = Pedalboard()
-#     ACOUSTIC = Pedalboard([
-#         HighpassFilter(cutoff_frequency_hz=80),
-#         Compressor(
-#             threshold_db=-20,
-#             ratio=2.5,
-#             attack_ms=10,
-#             release_ms=120,
-#         ),
-#         Reverb(
-#             room_size=0.18,
-#             damping=0.55,
-#             wet_level=0.08,
-#             dry_level=0.92,
-#         ),
-#         Gain(gain_db=1.5),
-#     ])
 
 
 # -----------------------------------------------------------------------------
 # Extraction
 # -----------------------------------------------------------------------------
-cfg = TabConfig(
-    speed=4,
-    max_note_duration = 3,
-    tuning=json.load(open(TUNING_01_JSON_DATA_PATH)),
-    instrument_name="guitar",
-    sample_rate=44100,
-)
+def get_tab_df_schema(config: TabConfig):
+    return pl.Schema(
+        {"start_time": pl.Float64} 
+        | {f"string_{i}": pl.String for i in range(1, len(config.tuning) + 1)}
+    )
 
-tab_df = (
-    pl.scan_csv(
-        TAB_01_CSV_DATA_PATH,
-        has_header=False,
-        new_columns=[f"string_{i}" for i in range(1, len(cfg.tuning) + 1)],
-    )
-    .cast(pl.String)
-    .with_row_index("index")
-    .select(
-        (pl.col("index") * cfg.dt).alias("start_time"),
-        cs.starts_with("string"),
-    )
-    .collect()
-)
 
-NOTES_DF_SCHEMA = pl.Schema({
-    "id": pl.UInt32,
-    "start_time": pl.Float64,
-    "duration": pl.Float64,
-    "string_number": pl.UInt16,
-    "fret": pl.UInt16,
-    "midi": pl.Int16,
-    "frequency": pl.Float64,
-})
-notes_df = (
-    pl.concat(
-        [
-            tab_df.lazy()
-            .select(pl.col("start_time"), pl.col(f"string_{string_num}").alias("raw"))
-            .filter(pl.col("raw") != "-")
-            .with_columns(pl.lit(string_num).cast(pl.UInt16).alias("string_number"))
-            .with_columns(pl.col("raw").cast(pl.UInt16).alias("fret"))
-            .with_columns((pl.col("fret") + open_midi).cast(pl.Int16).alias("midi"))
-            .with_columns((440.0 * 2 ** ((pl.col("midi").cast(pl.Float64) - 69.0) / 12.0)).alias("frequency"))
-            .with_columns((pl.col("start_time").shift(-1) - pl.col("start_time")).alias("duration"))
-            .with_columns(pl.min_horizontal(pl.col("duration"), pl.lit(cfg.max_note_duration)))
-            for string_num, open_midi
-            in enumerate(cfg.midi_tuning, start=1)
-        ],
+def csv_to_tab_df(
+    in_filepath: Path,
+    config: TabConfig,
+    *,
+    out_filepath: Path | None = None
+) -> pl.DataFrame:
+    tab_df_schema = get_tab_df_schema(config)
+    tab_df = (
+        pl.scan_csv(
+            in_filepath,
+            has_header=False,
+            new_columns=[f"string_{i}" for i in range(1, len(config.tuning) + 1)],
+        )
+        .cast(pl.String)
+        .with_row_index("index")
+        .select(
+            (pl.col("index") * config.dt).cast(pl.Float64).alias("start_time"),
+            cs.starts_with("string"),
+        )
+        .cast(tab_df_schema)
+        .collect()
     )
-    .sort(["start_time", "string_number"])
-    .with_row_index("id")
-    .select(NOTES_DF_SCHEMA.keys())
-    .cast(NOTES_DF_SCHEMA)
-    .collect()
-)
-notes_df.write_ndjson(NOTES_01_JSONL_OUT_PATH)
+    
+    if out_filepath is not None:
+        tab_df.write_ndjson(out_filepath)
+        
+    return tab_df
+    
+    
+def get_notes_df_schema():
+    return pl.Schema({
+        "id": pl.UInt32,
+        "start_time": pl.Float64,
+        "duration": pl.Float64,
+        "string_number": pl.UInt16,
+        "fret": pl.UInt16,
+        "midi": pl.Int16,
+        "frequency": pl.Float64,
+    })
+
+
+def tab_df_to_notes_df(
+    tab_df: pl.DataFrame,
+    config: TabConfig,
+    *,
+    out_filepath: Path | None = None
+) -> pl.DataFrame:
+    notes_df_schema = get_notes_df_schema()
+    notes_df = (
+        pl.concat(
+            [
+                tab_df.lazy()
+                .select(pl.col("start_time"), pl.col(f"string_{string_num}").alias("raw"))
+                .filter(pl.col("raw") != "-")
+                .with_columns(pl.lit(string_num).cast(pl.UInt16).alias("string_number"))
+                .with_columns(pl.col("raw").cast(pl.UInt16).alias("fret"))
+                .with_columns((pl.col("fret") + open_midi).cast(pl.Int16).alias("midi"))
+                .with_columns((440.0 * 2 ** ((pl.col("midi").cast(pl.Float64) - 69.0) / 12.0)).alias("frequency"))
+                .with_columns((pl.col("start_time").shift(-1) - pl.col("start_time")).alias("duration"))
+                .with_columns(pl.min_horizontal(pl.col("duration"), pl.lit(config.max_note_duration)))
+                for string_num, open_midi
+                in enumerate(config.midi_tuning, start=1)
+            ],
+        )
+        .sort(["start_time", "string_number"])
+        .with_row_index("id")
+        .select(notes_df_schema.keys())
+        .cast(notes_df_schema)
+        .collect()
+    )
+
+    if out_filepath is not None:
+        notes_df.write_ndjson(out_filepath)
+        
+    return notes_df
 
 
 # -----------------------------------------------------------------------------
@@ -228,7 +237,6 @@ notes_df.write_ndjson(NOTES_01_JSONL_OUT_PATH)
 # -----------------------------------------------------------------------------
 @njit(cache=True)
 def _karplus_strong_core(
-    *,
     number_of_samples: int,
     samples_per_cycle: int,
     buffer: np.ndarray,
@@ -263,7 +271,7 @@ def karplus_strong_ring(
     *,
     sample_rate: int = 44100,
     decay: float = 0.996,
-    base_volume: float = 1,
+    base_volume: float = 1.0,
 ) -> npt.NDArray[np.float32]:
     """Generate a plucked string sound (numpy array) using the Karplus-Strong algorithm."""
     samples_per_cycle = int(sample_rate / frequency)
@@ -298,11 +306,11 @@ def synthesize_note(
 
 
 def synthesize_notes(
-    config: TabConfig,
     notes_df: pl.DataFrame,
+    config: TabConfig,
 ) -> npt.NDArray[np.float32]:
     try:
-        notes_df.cast(NOTES_DF_SCHEMA)
+        notes_df.cast(get_notes_df_schema())
     except Exception as e:
         raise ValueError(f"Invalid notes_df: {e}")
     
@@ -320,35 +328,67 @@ def synthesize_notes(
         start_idx = int(note["start_time"] * config.sample_rate)
         song_array[start_idx : start_idx + len(synthesized)] += synthesized
     
-    peak = np.max(np.abs(song_array))
-    return song_array / peak if peak > 1.0 else song_array
+    return np.tanh(song_array)
 
 
 # -----------------------------------------------------------------------------
-# Conversion
+# Saving
 # -----------------------------------------------------------------------------
-# def save_array(
-#     array: npt.NDArray[np.float32],
-#     sample_rate: int,
-#     path: Path,
-#     *,
-#     quality: int = 128,
-#     board: Pedalboards = Pedalboards.EMPTY,
-# ) -> None:
-#     if not path.suffix.lower() in {".mp3", ".ogg"}:
-#         raise ValueError("File path should end with `.mp3` or `.ogg`")
+def save_numpy_as_mp3(array: npt.NDArray[np.floating], file_path: Path, sample_rate: int=44100) -> None:
+    np.clip(array, -1.0, 1.0)
+    audio_int16 = np.int16(array * 32767)
     
-#     processed = board.value(array, sample_rate)
-#     peak = np.max(np.abs(processed))
-#     normalized = processed / peak if peak > 1.0 else processed
+    segment = AudioSegment(
+        audio_int16.tobytes(),
+        frame_rate=sample_rate,
+        sample_width=audio_int16.dtype.itemsize,
+        channels=1,
+    )
+    
+    segment.export(str(file_path), format="mp3", bitrate="192k")
 
-#     num_channels = 1 if array.ndim == 1 else array.shape[0]
-#     with AudioFile(
-#         str(path),
-#         mode="w",
-#         samplerate=sample_rate,
-#         num_channels=num_channels,
-#         quality=quality,
-#     ) as f:
-#         f.write(normalized)
+    
+def save_numpy_as_ogg(array: npt.NDArray[np.floating], file_path: Path, sample_rate: int=44100) -> None:
+    np.clip(array, -1.0, 1.0)
+    audio_int16 = np.int16(array * 32767)
+    
+    segment = AudioSegment(
+        audio_int16.tobytes(),
+        frame_rate=sample_rate,
+        sample_width=audio_int16.dtype.itemsize,
+        channels=1,
+    )
+    
+    segment.export(
+        file_path,
+        format="ogg",
+        codec="libvorbis",
+        bitrate="192k",
+    )
+    
+    
+def save_numpy_as_wav(array: npt.NDArray[np.floating], file_path: Path, sample_rate: int=44100) -> None:
+    array = np.clip(array, -1.0, 1.0)
+    int16_array = (array * 32767).astype(np.int16)
 
+    wavfile.write(file_path, sample_rate, int16_array)
+    
+
+# -----------------------------------------------------------------------------
+# Main
+# -----------------------------------------------------------------------------
+config = TabConfig(
+    speed=6.0,
+    max_note_duration = 2.5,
+    tuning=json.load(open(TUNING_01_JSON_DATA_PATH)),
+    instrument_name="guitar",
+    sample_rate=44100,
+    base_volume=0.5,
+)
+
+tab_df = csv_to_tab_df(TAB_01_CSV_DATA_PATH, config, out_filepath=TAB_01_JSONL_OUT_PATH)
+notes_df = tab_df_to_notes_df(tab_df, config, out_filepath=NOTES_01_JSONL_OUT_PATH)
+audio_array = synthesize_notes(notes_df, config)
+save_numpy_as_mp3(audio_array, TAB_01_MP3_OUT_PATH, config.sample_rate)
+save_numpy_as_ogg(audio_array, TAB_01_OGG_OUT_PATH, config.sample_rate)
+save_numpy_as_wav(audio_array, TAB_01_WAV_OUT_PATH, config.sample_rate)

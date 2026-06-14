@@ -8,10 +8,13 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "audioop-lts>=0.2.2",
     "numba>=0.65.1",
     "numpy>=2.4.6",
     "pedalboard>=0.9.23",
     "polars>=1.41.2",
+    "pydub>=0.25.1",
+    "scipy>=1.17.1",
     "streamlit>=1.58.0",
 ]
 
