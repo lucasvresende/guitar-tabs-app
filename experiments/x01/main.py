@@ -2,7 +2,6 @@ from enum import Enum, StrEnum, auto
 from functools import lru_cache
 from pathlib import Path
 import json
-from sqlite3 import SQLITE_ERROR_MISSING_COLLSEQ
 from typing import Literal
 from math import log2
 from collections.abc import Sequence
@@ -332,7 +331,7 @@ def synthesize_notes(
 
 
 # -----------------------------------------------------------------------------
-# Saving
+# Export
 # -----------------------------------------------------------------------------
 def save_numpy_as_mp3(array: npt.NDArray[np.floating], file_path: Path, sample_rate: int=44100) -> None:
     np.clip(array, -1.0, 1.0)
