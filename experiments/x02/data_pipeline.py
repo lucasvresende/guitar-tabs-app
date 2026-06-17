@@ -121,19 +121,18 @@ def frequency_to_midi(freq: float) -> float:
 # -----------------------------------------------------------------------------
 # Types
 # -----------------------------------------------------------------------------
-class SynthAlgorithms(StrEnum):
-    KARPLUS_STRONG = auto()
+type SynthAlgorithms = Literal["karplus-strong"]
 
 
 @dataclass(frozen=True, slots=True)
 class TabConfig:
     speed: float = 4.0 # dashes/s
     max_note_duration:float = 3.0
-    tuning: tuple[str, ...] = ("E4", "B3", "G3", "D3", "A2", "E2")
+    tuning: Sequence[str] = ("E4", "B3", "G3", "D3", "A2", "E2")
     instrument_name: str = "guitar"
     sample_rate: int = 44100
-    synthesis_algorithm: SynthAlgorithms = SynthAlgorithms.KARPLUS_STRONG
-    base_volume: float = 0.1
+    synthesis_algorithm: SynthAlgorithms = "karplus-strong"
+    base_volume: float = 1.0
     
     @property
     def dt(self) -> float:
@@ -179,7 +178,7 @@ def csv_to_tab_df(
     
     if out_filepath is not None:
         tab_df.write_ndjson(out_filepath)
-        
+    
     return tab_df
     
     
@@ -207,7 +206,7 @@ def tab_df_to_notes_df(
             [
                 tab_df.lazy()
                 .select(pl.col("start_time"), pl.col(f"string_{string_num}").alias("raw"))
-                .filter(pl.col("raw") != "-")
+                .filter(pl.col("raw").is_not_null(), ~pl.col("raw").str.contains(r"^[ -]*$"))
                 .with_columns(pl.lit(string_num).cast(pl.UInt16).alias("string_number"))
                 .with_columns(pl.col("raw").cast(pl.UInt16).alias("fret"))
                 .with_columns((pl.col("fret") + open_midi).cast(pl.Int16).alias("midi"))
@@ -293,7 +292,7 @@ def synthesize_note(
     duration: float,
 ) -> npt.NDArray[np.float32]:
     match config.synthesis_algorithm:
-        case SynthAlgorithms.KARPLUS_STRONG:
+        case "karplus-strong":
             return karplus_strong_ring(
                 frequency=frequency,
                 duration=duration,
@@ -376,18 +375,19 @@ def save_numpy_as_wav(array: npt.NDArray[np.floating], file_path: Path, sample_r
 # -----------------------------------------------------------------------------
 # Main
 # -----------------------------------------------------------------------------
-config = TabConfig(
-    speed=6.0,
-    max_note_duration = 2.5,
-    tuning=json.load(open(TUNING_01_JSON_DATA_PATH)),
-    instrument_name="guitar",
-    sample_rate=44100,
-    base_volume=0.5,
-)
+if __name__ == "__main__":
+    config = TabConfig(
+        speed=6.0,
+        max_note_duration = 2.5,
+        tuning=json.load(open(TUNING_01_JSON_DATA_PATH)),
+        instrument_name="guitar",
+        sample_rate=44100,
+        base_volume=0.5,
+    )
 
-tab_df = csv_to_tab_df(TAB_01_CSV_DATA_PATH, config, out_filepath=TAB_01_JSONL_OUT_PATH)
-notes_df = tab_df_to_notes_df(tab_df, config, out_filepath=NOTES_01_JSONL_OUT_PATH)
-audio_array = synthesize_notes(notes_df, config)
-save_numpy_as_mp3(audio_array, TAB_01_MP3_OUT_PATH, config.sample_rate)
-save_numpy_as_ogg(audio_array, TAB_01_OGG_OUT_PATH, config.sample_rate)
-save_numpy_as_wav(audio_array, TAB_01_WAV_OUT_PATH, config.sample_rate)
+    tab_df = csv_to_tab_df(TAB_01_CSV_DATA_PATH, config, out_filepath=TAB_01_JSONL_OUT_PATH)
+    notes_df = tab_df_to_notes_df(tab_df, config, out_filepath=NOTES_01_JSONL_OUT_PATH)
+    audio_array = synthesize_notes(notes_df, config)
+    save_numpy_as_mp3(audio_array, TAB_01_MP3_OUT_PATH, config.sample_rate)
+    save_numpy_as_ogg(audio_array, TAB_01_OGG_OUT_PATH, config.sample_rate)
+    save_numpy_as_wav(audio_array, TAB_01_WAV_OUT_PATH, config.sample_rate)
