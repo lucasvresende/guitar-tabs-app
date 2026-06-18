@@ -4,8 +4,12 @@ import numpy.typing as npt
 import polars as pl
 import dataframely as dy
 
-from experiments.x03.processing.types import NotesDfSchema, TabConfig
+from validation import NotesDfSchema, TabConfig
 
+
+# -----------------------------------------------------------------------------
+# Karplus-Strong
+# -----------------------------------------------------------------------------
 @njit(cache=True)
 def _karplus_strong_core(
     number_of_samples: int,
