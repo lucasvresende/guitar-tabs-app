@@ -14,6 +14,7 @@ import numpy as np
 import numpy.typing as npt
 from pydub import AudioSegment
 from scipy.io import wavfile
+from pydantic import BaseModel
 
 # -----------------------------------------------------------------------------
 # Paths
@@ -124,8 +125,7 @@ def frequency_to_midi(freq: float) -> float:
 type SynthAlgorithms = Literal["karplus-strong"]
 
 
-@dataclass(frozen=True, slots=True)
-class TabConfig:
+class TabConfig(BaseModel):
     speed: float = 4.0 # dashes/s
     max_note_duration:float = 3.0
     tuning: Sequence[str] = ("E4", "B3", "G3", "D3", "A2", "E2")

@@ -30,10 +30,13 @@ TAB_01_OGG_OUT_PATH = OUT_PATH / "audio_01.ogg"
 # -----------------------------------------------------------------------------
 def make_empty_tab(num_beats: int = 16, tuning: Sequence[str]=STANDARD_TUNING) -> pl.DataFrame:
     """Create an empty guitar tab table."""
-    return pl.DataFrame({
-        "String": pl.Series(values=tuning, dtype=pl.String),
-        **{str(i): pl.Series(values=[None] * len(tuning), dtype=pl.String) for i in range(1, num_beats + 1)}
-    })
+    string_series = pl.Series(name="String", values=tuning, dtype=pl.String)
+    beats_series_list = [
+        pl.Series(name=str(i), values=[None] * len(tuning), dtype=pl.String) 
+        for i in range(1, num_beats + 1)
+    ]
+    data = [string_series] + beats_series_list
+    return pl.DataFrame(data)
 
 
 def tab_to_text(df: pl.DataFrame) -> str:
@@ -44,7 +47,6 @@ def tab_to_text(df: pl.DataFrame) -> str:
     
     lines = [f"{row[0]}├{render_frets(row[1:])}┤" for row in df.iter_rows()]
     return "\n".join(lines)
-    
 
 
 def save_tab_as_ogg(df: pl.DataFrame, path: Path):
@@ -70,9 +72,10 @@ def save_tab_as_ogg(df: pl.DataFrame, path: Path):
 # -----------------------------------------------------------------------------
 # UI
 # -----------------------------------------------------------------------------
-st.set_page_config(page_title="Guitar Tab Editor", layout="wide")
+st.set_page_config(page_title="Guitar Tab Editor", page_icon="🎸", layout="wide")
 
 st.title("Guitar Tab Editor")
+st.caption("Create, edit, and play guitar tabs.")
 
 if "tab_df" not in st.session_state:
     st.session_state.tab_df = make_empty_tab()
@@ -98,7 +101,6 @@ edited_df = pl.from_pandas(
     st.data_editor(
         st.session_state.tab_df.to_pandas(),
         hide_index=True,
-        use_container_width=True,
         num_rows="fixed",
         on_change=None,
         placeholder="-",
@@ -114,12 +116,12 @@ edited_df = pl.from_pandas(
                 col: st.column_config.TextColumn(validate=FRET_PATTERN) 
                 for col in st.session_state.tab_df.columns 
                 if col != "String"
-            }
+            },
         },
-    )
+    ),
 )
 
-# st.session_state["tab_df"] = edited_df
+# st.session_state.tab_df = edited_df
 
 st.subheader("Plain-text tab preview")
 tab_text = tab_to_text(edited_df)
