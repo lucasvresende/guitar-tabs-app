@@ -62,21 +62,20 @@ class NotesDfSchema(dy.Schema):
 
 
 def validate_notes_df(df: pl.DataFrame, config: TabConfig) -> dy.DataFrame[NotesDfSchema]:
-    validated_df = NotesDfSchema.validate(df, cast=True)
-    
-    if validated_df.select(pl.col("string_number").gt(config.number_of_strings).any()).item():
-        msg = f"`string_number` column must not be greater than than {config.number_of_strings}."
-        raise ValueError(msg)
-    
-    if validated_df.select(pl.col("fret").gt(config.max_fret).any()).item():
-        msg = f"`fret` column must not be greater than than {config.max_fret}."
-        raise ValueError(msg)
-    
-    if validated_df.select(pl.col("duration").gt(config.max_note_duration).any()).item():
-        msg = f"`duration` column must not be greater than than {config.max_note_duration}."
-        raise ValueError(msg)
-    
-    return validated_df
+    class NotesDfSchemaWithExtraRules(NotesDfSchema):
+        @dy.rule()
+        def validate_max_string_number(cls) -> pl.Expr:
+            return pl.col("string_number") <= config.number_of_strings
+        
+        @dy.rule()
+        def validate_max_fret(cls) -> pl.Expr:
+            return pl.col("fret") <= config.number_of_strings
+        
+        @dy.rule()
+        def validate_max_note_duration(cls) -> pl.Expr:
+            return pl.col("duration") <= config.max_note_duration
+        
+    return NotesDfSchemaWithExtraRules.validate(df, cast=True)
 
 
 def make_tab_schema(config: TabConfig) -> type[dy.Schema]:
