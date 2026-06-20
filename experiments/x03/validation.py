@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from enum import StrEnum
 from typing import Annotated, Literal
 
 import dataframely as dy
@@ -14,8 +15,10 @@ from note_conversions import name_to_midi
 # Constants
 # -----------------------------------------------------------------------------
 STANDARD_TUNING = ("E4", "B3", "G3", "D3", "A2", "E2")
-NOTE_PATTERN = r"^(?:[ACDFG](?:#|b)?|[BE]b?)(?:-1|[0-9])$"
-FRET_PATTERN = r"^(?:[0-9]|[12][0-9]|30)?$"
+
+class RegexPatterns(StrEnum):
+    NOTE_PATTERN = r"^(?:Ab|A|A#|Bb|B|C|C#|Db|D|D#|Eb|E|F|F#|Gb|G|G#)(?:-1|[0-9])$"
+    FRET_PATTERN = r"^(?:[0-9]|[1-9][0-9])$"
 
 
 # -----------------------------------------------------------------------------
@@ -81,7 +84,7 @@ def validate_notes_df(df: pl.DataFrame, config: TabConfig) -> dy.DataFrame[Notes
 def make_tab_schema(config: TabConfig) -> type[dy.Schema]:
     start_time_col = {"start_time": dy.Float64(min=0)}
     string_cols = {
-        f"string_{i}": dy.String(nullable=True, regex=FRET_PATTERN) 
+        f"string_{i}": dy.String(nullable=True, regex=RegexPatterns.FRET_PATTERN) 
         for i in range(1, len(config.tuning) + 1)
     }
     attrs = start_time_col | string_cols
