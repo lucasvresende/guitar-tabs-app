@@ -85,7 +85,7 @@ def synthesize_notes(
     config: TabConfig,
 ) -> npt.NDArray[np.float32]:
     if notes_df.is_empty():
-        raise ValueError("Notes df is empty")
+        return np.array([], dtype=np.float32)
     
     song_length: float = (
         notes_df.select(

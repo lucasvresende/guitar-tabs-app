@@ -3,6 +3,8 @@ from pathlib import Path
 import dataframely as dy
 import polars as pl
 import polars.selectors as cs
+import numpy as np
+import numpy.typing as npt
 
 from exporting import save_numpy_as_ogg
 from synthesis import synthesize_notes
@@ -20,29 +22,62 @@ def make_empty_tab(config: TabConfig) -> pl.DataFrame:
     return pl.DataFrame(data)
 
 
-def tab_df_to_notes_df(
-    tab_df: pl.DataFrame,
+def validate_ui_df(ui_df: pl.DataFrame, config: TabConfig) -> pl.DataFrame:
+    # TODO: Add regex validation
+    if "String" not in ui_df.columns:
+        raise ValueError("`String` column missing from ui_df")
+    
+    if not all(f"{i}" for i in range(1, config.number_of_beats)):
+        raise ValueError("Beats columns do not match the number of beats set in config")
+    
+    return ui_df
+
+
+def check_ui_df_not_filled(ui_df: pl.DataFrame) -> bool:
+    return (
+        ui_df.select(
+            pl.all_horizontal(
+                pl.all().exclude("String").is_null().all(),
+            ),
+        ).item()
+    )
+
+
+def ui_df_to_tab_df(
+    ui_df: pl.DataFrame,
     config: TabConfig,
     *,
-    out_filepath: Path | None = None
-) -> dy.DataFrame[NotesDfSchema]:
-    tab_df = validate_tab_df(tab_df, config)
-
-    tab_df_transposed = (
-        tab_df.drop("String")
-        .transpose(column_names=(f"string_{i}" for i in range(1, len(config.tuning) + 1)))
+    out_jsonl_filepath: Path | None = None,
+) -> dy.DataFrame:
+    tab_df = (
+        ui_df.drop("String")
+        .transpose(column_names=(f"string_{i}" for i in range(1, config.number_of_strings + 1)))
         .lazy()
         .with_row_index("index")
         .select(
             (pl.col("index") * config.dt).cast(pl.Float64).alias("start_time"),
             cs.starts_with("string"),
         )
+        .collect()
     )
+    tab_df = validate_tab_df(tab_df, config)
+    
+    if out_jsonl_filepath is not None:
+        tab_df.write_ndjson(out_jsonl_filepath)
+        
+    return tab_df
 
+
+def tab_df_to_notes_df(
+    tab_df: pl.DataFrame,
+    config: TabConfig,
+    *,
+    out_jsonl_filepath: Path | None = None
+) -> dy.DataFrame[NotesDfSchema]:
     notes_df = (
         pl.concat(
             [
-                tab_df_transposed.lazy()
+                tab_df.lazy()
                 .select(pl.col("start_time"), pl.col(f"string_{string_num}").alias("raw"))
                 .filter(pl.col("raw").is_not_null(), ~pl.col("raw").str.contains(r"^[ -]*$"))
                 .with_columns(pl.lit(string_num).cast(pl.UInt16).alias("string_number"))
@@ -60,26 +95,25 @@ def tab_df_to_notes_df(
         .select(NotesDfSchema.column_names())
         .collect()
     )
+    notes_df = validate_notes_df(notes_df, config)
 
-    if out_filepath is not None:
-        notes_df.write_ndjson(out_filepath)
+    if out_jsonl_filepath is not None:
+        notes_df.write_ndjson(out_jsonl_filepath)
     
-    return validate_notes_df(notes_df, config)
+    return notes_df
 
 
-def tab_to_text(df: pl.DataFrame) -> str:
+def tab_to_text(ui_df: pl.DataFrame) -> str:
     """Convert the editable table into plain text guitar tab."""
     def render_frets(row: tuple[str, ...]):
         line_frets = [fret.center(3, "─") if fret else "───" for fret in row]
         return "".join(line_frets)
     
-    lines = [f"{row[0]}├{render_frets(row[1:])}┤" for row in df.iter_rows()]
+    lines = [f"{row[0]}├{render_frets(row[1:])}┤" for row in ui_df.iter_rows()]
     return "\n".join(lines)
 
 
-def tab_to_ogg(tab_df: pl.DataFrame, path: Path):
-    tuning = tab_df.get_column("String").to_list()
-    config = TabConfig(tuning=tuning)
-    notes_df = tab_df_to_notes_df(tab_df, config, out_filepath=None)
-    audio_array = synthesize_notes(notes_df, config)
-    save_numpy_as_ogg(audio_array, path)
+def ui_df_to_numpy_audio(ui_df: pl.DataFrame, config: TabConfig) -> npt.NDArray[np.float32]:
+    tab_df = ui_df_to_tab_df(ui_df, config)
+    notes_df = tab_df_to_notes_df(tab_df, config)
+    return synthesize_notes(notes_df, config)

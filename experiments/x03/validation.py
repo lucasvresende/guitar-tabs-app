@@ -55,12 +55,13 @@ class TabConfig(BaseModel, frozen=True):
 # Dataframely
 # -----------------------------------------------------------------------------
 class NotesDfSchema(dy.Schema):
+    # TODO: Add column and validation for note name and octave
     id = dy.UInt32(primary_key=True)
     start_time = dy.Float64(min=0)
     duration = dy.Float64(min_exclusive=0)
     string_number = dy.UInt16(min=1)
     fret = dy.UInt16(min=0)
-    midi = dy.Int16(min=-1, max=9)
+    midi = dy.Int16()
     frequency = dy.Float64(min_exclusive=0)
 
 
@@ -72,7 +73,7 @@ def validate_notes_df(df: pl.DataFrame, config: TabConfig) -> dy.DataFrame[Notes
         
         @dy.rule()
         def validate_max_fret(cls) -> pl.Expr:
-            return pl.col("fret") <= config.number_of_strings
+            return pl.col("fret") <= config.max_fret
         
         @dy.rule()
         def validate_max_note_duration(cls) -> pl.Expr:
