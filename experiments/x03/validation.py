@@ -18,7 +18,7 @@ STANDARD_TUNING = ("E4", "B3", "G3", "D3", "A2", "E2")
 
 class RegexPatterns(StrEnum):
     NOTE_PATTERN = r"^(?:Ab|A|A#|Bb|B|C|C#|Db|D|D#|Eb|E|F|F#|Gb|G|G#)(?:-1|[0-9])$"
-    FRET_PATTERN = r"^(?:[0-9]|[1-9][0-9])$"
+    FRET_PATTERN = r"^(?:[0-9]|[1-2][0-9]|[30])$"
 
 
 # -----------------------------------------------------------------------------
@@ -32,7 +32,6 @@ class TabConfig(BaseModel, frozen=True):
     max_note_duration: PositiveFloat = 2.0
     tuning: Sequence[str] = STANDARD_TUNING
     number_of_beats: PositiveInt = 16
-    max_fret: PositiveInt = 30
     instrument_name: str = "guitar"
     sample_rate: PositiveInt = 44100
     synthesis_algorithm: SynthAlgorithms = "karplus-strong"
@@ -55,7 +54,6 @@ class TabConfig(BaseModel, frozen=True):
 # Dataframely
 # -----------------------------------------------------------------------------
 class NotesDfSchema(dy.Schema):
-    # TODO: Add column and validation for note name and octave
     id = dy.UInt32(primary_key=True)
     start_time = dy.Float64(min=0)
     duration = dy.Float64(min_exclusive=0)
@@ -70,10 +68,6 @@ def validate_notes_df(df: pl.DataFrame, config: TabConfig) -> dy.DataFrame[Notes
         @dy.rule()
         def validate_max_string_number(cls) -> pl.Expr:
             return pl.col("string_number") <= config.number_of_strings
-        
-        @dy.rule()
-        def validate_max_fret(cls) -> pl.Expr:
-            return pl.col("fret") <= config.max_fret
         
         @dy.rule()
         def validate_max_note_duration(cls) -> pl.Expr:
@@ -98,4 +92,14 @@ def validate_tab_df(df: pl.DataFrame, config: TabConfig) -> dy.DataFrame:
     return TabDfSchema.validate(df)
     
 
-
+# -----------------------------------------------------------------------------
+# Custom
+# -----------------------------------------------------------------------------
+def validate_ui_df(ui_df: pl.DataFrame, config: TabConfig) -> pl.DataFrame:
+    if "String" not in ui_df.columns:
+        raise ValueError("`String` column missing from ui_df")
+    
+    if not all(f"{i}" for i in range(1, config.number_of_beats)):
+        raise ValueError("Beats columns do not match the number of beats set in config")
+    
+    return ui_df

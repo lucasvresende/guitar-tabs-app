@@ -5,8 +5,8 @@ import streamlit as st
 import polars as pl
 
 from exporting import save_numpy_as_ogg
-from transformations import check_ui_df_not_filled, make_empty_tab, tab_to_text, ui_df_to_numpy_audio, validate_ui_df
-from validation import RegexPatterns, TabConfig
+from transformations import check_ui_df_not_filled, make_empty_tab, tab_to_text, ui_df_to_numpy_audio
+from validation import RegexPatterns, TabConfig, validate_ui_df
 
 # -----------------------------------------------------------------------------
 # Setup
@@ -15,9 +15,6 @@ st.set_page_config(page_title="Guitar Tab Editor", page_icon="🎸", layout="wid
 
 if "tab_config" not in st.session_state:
     st.session_state.tab_config = TabConfig()
-
-if "ui_df" not in st.session_state:
-    st.session_state.ui_df = make_empty_tab(st.session_state.tab_config)
 
 # -----------------------------------------------------------------------------
 # Layout
@@ -29,8 +26,9 @@ with st.container(border=True):
     st.header("Tab")
     
     # Tab data editor
-    pd_ui_df = st.data_editor(
-        st.session_state.ui_df.to_pandas(),
+    empty_df = make_empty_tab(st.session_state.tab_config)
+    ui_df = st.data_editor(
+        empty_df,
         hide_index=True,
         num_rows="fixed",
         on_change=None,
@@ -46,21 +44,75 @@ with st.container(border=True):
             ),
             **{
                 col: st.column_config.TextColumn(
-                    validate=RegexPatterns.FRET_PATTERN, # TODO: Adapt to config max frets
+                    validate=RegexPatterns.FRET_PATTERN,
                     width=50,
                 )
-                for col in st.session_state.ui_df.columns
+                for col in empty_df.columns
                 if col != "String"
             },
         },
     )
     ui_df = validate_ui_df(
-        ui_df=pl.from_pandas(pd_ui_df), 
+        ui_df=pl.DataFrame(ui_df),
         config=st.session_state.tab_config,
     )
 
     with st.expander("⚙️ Config"):
-        pass
+        col_1, col_2 = st.columns(2)
+        
+        with col_1:
+            with st.container(border=True):
+                speed = st.slider(
+                    "Speed",
+                    min_value=1.0,
+                    max_value=20.0,
+                    value=st.session_state.tab_config.speed,
+                    step=0.5,
+                )
+                
+            with st.container(border=True):
+                default_number_of_beats = st.session_state.tab_config.number_of_beats
+                number_of_beats = st.number_input(
+                    "Number of beats", 
+                    min_value=1,
+                    max_value=100,
+                    value = default_number_of_beats,
+                )
+            
+        with col_2:
+            with st.container(border=True):
+                st.text("Tuning")
+                default_number_of_strings = st.session_state.tab_config.number_of_strings
+                default_tuning = st.session_state.tab_config.tuning
+                number_of_strings = st.number_input(
+                    "Number of strings",
+                    min_value=1,
+                    max_value=12,
+                    value=default_number_of_strings,
+                )
+                tuning_df = st.data_editor(
+                    data=pl.DataFrame({
+                        str(i + 1): default_tuning[i % default_number_of_strings] 
+                        for i in range(number_of_strings)
+                    }),
+                    hide_index=True,
+                    column_config={
+                        col: st.column_config.SelectboxColumn(
+                            options=[
+                                f"{note}{octave}"
+                                for note in ["A", "A#", "B", "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#"]
+                                for octave in [1, 2, 3, 4, 5]
+                            ],
+                            required=True,
+                        ) for col in ui_df.columns
+                    }
+                )
+                assert isinstance(tuning_df, pl.DataFrame)
+                tuning = tuple(tuning_df.row(0))
+        
+        def update_tab_config():
+            st.session_state.tab_config = TabConfig(speed=speed, number_of_beats=number_of_beats, tuning=tuning)
+        st.button("Apply", on_click=update_tab_config)
     
     with st.expander("📔 Text Preview"):
         tab_text = tab_to_text(ui_df)

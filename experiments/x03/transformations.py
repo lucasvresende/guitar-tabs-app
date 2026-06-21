@@ -22,17 +22,6 @@ def make_empty_tab(config: TabConfig) -> pl.DataFrame:
     return pl.DataFrame(data)
 
 
-def validate_ui_df(ui_df: pl.DataFrame, config: TabConfig) -> pl.DataFrame:
-    # TODO: Add regex validation
-    if "String" not in ui_df.columns:
-        raise ValueError("`String` column missing from ui_df")
-    
-    if not all(f"{i}" for i in range(1, config.number_of_beats)):
-        raise ValueError("Beats columns do not match the number of beats set in config")
-    
-    return ui_df
-
-
 def check_ui_df_not_filled(ui_df: pl.DataFrame) -> bool:
     return (
         ui_df.select(
