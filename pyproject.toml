@@ -93,11 +93,7 @@ per-file-ignores = { "packages/*/tests/**/*.py" = [
 # -----------------------------------------------------------------------------
 [tool.pyright]
 include = [
-    "experiments",
-    "packages/medical-finance/src",
-    "packages/medical-finance/tests",
-    "packages/reconcilekit/src",
-    "packages/reconcilekit/tests",
+    "guitar_tabs_app",
 ]
 exclude = ["**/node_modules", "**/__pycache__", "**/.*", ".venv"]
 ignore = ["**/.venv/**", "**/venv/**", "**/site-packages/**", "**/*.ipynb"]
