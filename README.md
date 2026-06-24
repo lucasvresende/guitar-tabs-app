@@ -5,6 +5,8 @@ plain-text tab, synthesizing it into audio, and downloading the result.
 
 The maintained application code lives in `guitar_tabs_app/`.
 
+Check out the [app at streamlit cloud](https://guitartabs.streamlit.app/)
+
 ## Features
 
 - Edit a tab in a fixed Streamlit table, with one row per string and one column per beat.
